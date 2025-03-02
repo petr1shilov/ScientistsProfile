@@ -1,0 +1,8 @@
+__pycache__*
+*.ipynb
+.DS_Store
+*.xlsx
+*.pdf
+!kody_OECD.xlsx
+oe\321\201d_api_document.py
+"oe\321\201d_api_id.py"
