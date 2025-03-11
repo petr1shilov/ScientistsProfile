@@ -34,8 +34,8 @@ class OEСDApiId:
         self.oecd_df = oecd_df.applymap(lambda s: s.replace('\n', ' ') if isinstance(s, str) else s)
 
 
-    def get_author_papers(aelf, author_id, top_n_papers=2):
-        author_papers = requests.get(f'https://api.semanticscholar.org/graph/v1/author/{author_id}/papers?fields=title,url,year,authors,fieldsOfStudy,s2FieldsOfStudy,citationCount,influentialCitationCount,abstract&limit=1000').json()
+    def get_author_papers(aelf, author_id, top_n_papers=2, n_search_papers=20):
+        author_papers = requests.get(f'https://api.semanticscholar.org/graph/v1/author/{author_id}/papers?fields=title,authors,citationCount,abstract&limit={n_search_papers}').json()
         papers_with_annotations = [paper for paper in author_papers['data'] if paper['abstract']]
         most_important_papers = sorted(
             papers_with_annotations,

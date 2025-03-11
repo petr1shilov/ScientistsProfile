@@ -40,8 +40,8 @@ class GPTGenApiId:
             annotation_dict = df.set_index('Название лаборатории / центра')[annotation_columns].apply(lambda row: row.tolist(), axis=1).to_dict()
             return annotation_dict        
         
-    def get_author_papers(self, author_id, top_n_papers=2):
-        author_papers = requests.get(f'https://api.semanticscholar.org/graph/v1/author/{author_id}/papers?fields=title,url,year,authors,fieldsOfStudy,s2FieldsOfStudy,citationCount,influentialCitationCount,abstract&limit=1000').json()
+    def get_author_papers(self, author_id, top_n_papers=2, n_search_papers=20):
+        author_papers = author_papers = requests.get(f'https://api.semanticscholar.org/graph/v1/author/{author_id}/papers?fields=title,authors,citationCount,abstract&limit={n_search_papers}').json()
         papers_with_annotations = [paper for paper in author_papers['data'] if paper['abstract']]
         most_important_papers = sorted(
             papers_with_annotations,
