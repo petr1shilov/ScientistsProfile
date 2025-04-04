@@ -8,6 +8,8 @@ import time
 import logging
 import xlsxwriter
 import requests
+import time
+from tqdm import tqdm
 
 from bot.texts import *
 
@@ -34,16 +36,73 @@ class OEСDApiId:
         self.oecd_df = oecd_df.applymap(lambda s: s.replace('\n', ' ') if isinstance(s, str) else s)
 
 
-    def get_author_papers(aelf, author_id, top_n_papers=2, n_search_papers=20):
-        author_papers = requests.get(f'https://api.semanticscholar.org/graph/v1/author/{author_id}/papers?fields=title,authors,citationCount,abstract&limit={n_search_papers}').json()
-        papers_with_annotations = [paper for paper in author_papers['data'] if paper['abstract']]
-        most_important_papers = sorted(
-            papers_with_annotations,
-            key=lambda d: d['citationCount'], reverse=True)[:top_n_papers]
-        matching_author = next(
-        (author for paper in author_papers['data'] for author in paper.get('authors', []) if author.get('authorId') == str(author_id)), 
-            None
+    def get_author_papers(self, author_id, top_n_papers=10, limit=100):
+        api_logger.info("Начало работы для получения работ автора")
+        # Получение информации об авторе
+        request = requests.post(
+            'https://api.semanticscholar.org/graph/v1/author/batch',
+            params={'fields': 'name,hIndex,citationCount,paperCount'},
+            json={"ids":[f"{author_id}"]},
+        )
+        author_meta = request.json()[0]
+        matching_author = {'authorId': author_meta['authorId'], 'name': author_meta['name']}
+
+        steps_num = author_meta['paperCount'] // limit + 1
+
+        # Сбор всех статей автора
+        all_papers = []
+        for i in tqdm(range(steps_num), desc="Загружаю статьи автора"):
+            offset = limit * i
+            response = requests.get(
+                f'https://api.semanticscholar.org/graph/v1/author/{author_id}/papers',
+                params={
+                    'fields': 'title,citationCount,authors,abstract,paperId',
+                    'limit': limit,
+                    'offset': offset
+                },
             )
+            all_papers += response.json().get('data', [])
+            time.sleep(0.5)
+        filtered_papers = [paper for paper in all_papers if paper.get('abstract') is not None]
+        most_important_papers = sorted(filtered_papers, key=lambda x: x['citationCount'], reverse=True)[:top_n_papers]
+
+        # Получение списка всех коавторов (для фильтрации self-citations)
+        all_co_authors = set()
+        for paper in most_important_papers:
+            for author in paper.get('authors', []):
+                if author['authorId'] and author['authorId'] != str(author_id):
+                    all_co_authors.add(author['authorId'])
+
+        # Проходим по N статьям и собираем все citing papers
+        for paper_meta in most_important_papers:
+            steps_num = paper_meta['citationCount'] // limit + 1
+
+            all_citing_papers = []
+            for i in tqdm(range(steps_num), desc=f"Цитируют: {paper_meta['title'][:30]}..."):
+                offset = limit * i
+                response = requests.get(
+                    f"https://api.semanticscholar.org/graph/v1/paper/{paper_meta['paperId']}/citations",
+                    params={
+                        'fields': 'citingPaper.authors,citingPaper.title,citingPaper.year',
+                        'limit': limit,
+                        'offset': offset
+                    },
+                )
+                all_citing_papers += response.json().get('data', [])
+                time.sleep(0.5)
+
+            # фильтрация по self-citations
+            cleaned_citing_papers = []
+            for citing_paper in all_citing_papers:
+                authors_ids = set(authors['authorId'] for authors in citing_paper['citingPaper']['authors'] if authors['authorId'])
+                if len(authors_ids & all_co_authors) == 0:
+                    cleaned_citing_papers.append(citing_paper)
+
+            paper_meta['allCitingPapers'] = len(all_citing_papers)
+            paper_meta['cleanedCitingPapers'] = len(cleaned_citing_papers)
+        
+        api_logger.info("Обработка автора закончина")
+
         return most_important_papers, matching_author
         
     def get_gpt_answer(self, system_prompt, user_query):
@@ -140,12 +199,15 @@ class OEСDApiId:
     def dict_to_excel(self, author_id, user_id):
         author_papers, author = self.get_author_papers(author_id)
         total_df = pd.DataFrame()
-
+        total_mectric_df = pd.DataFrame()
         
         for paper in author_papers:
-            api_logger.info(f'{paper["paperId"]}\n')
+            api_logger.info(f'paperId {paper["paperId"]}\n')
 
-            text_for_oecd = paper['title'] + paper['abstract']
+            title = paper['title'] or ''
+            abstract = paper['abstract'] or ''
+            text_for_oecd = title + abstract
+
             # Получаем данные по OECD
             oecd_answer = self.get_oecd(self.categorize_scientific_fields(text_for_oecd))
                
@@ -154,6 +216,7 @@ class OEСDApiId:
             author_name = [author['name']] * len(oecd_answer)
             article_title = [paper['title']] * len(oecd_answer)
             citation_count = [paper['citationCount']] * len(oecd_answer)
+            cleaned_citation_count = [paper['cleanedCitingPapers']] * len(oecd_answer)
 
             # Формируем корректный DataFrame
             answer_df = pd.DataFrame(
@@ -161,15 +224,24 @@ class OEСDApiId:
                 columns=['S2 ID Автора', 'Имя Автора', 'Название статьи', 'Количество цитат']
             )
 
+            temp_metric_df = pd.DataFrame(
+                data=list(zip(article_title, citation_count, cleaned_citation_count)), 
+                columns=['Название статьи', 'Количество цитат', 'Количество цитат без соавторов']
+            )
+
             # Объединяем с oecd_answer
             answer_df = pd.concat([answer_df, oecd_answer], axis=1)
+            temp_metric_df['OECD Код'] = oecd_answer['OECD Код'].values
 
             # Выводим результат
             total_df = pd.concat([total_df, answer_df], axis=0)
+            total_mectric_df = pd.concat([total_mectric_df, temp_metric_df], axis=0)
 
         total_df = total_df.reset_index(drop=True)
         path = f"files/{user_id}_{author_id}_oecd.xlsx"
-        total_df.to_excel(path, index=False, engine='xlsxwriter')
+        with pd.ExcelWriter(path, engine='xlsxwriter') as writer:
+            total_df.to_excel(writer, sheet_name='Статьи и области знаний', index=False)
+            total_mectric_df.to_excel(writer, sheet_name='Метрики', index=False)
         api_logger.info("Ответ запакован в xlsx")
         return path
 
