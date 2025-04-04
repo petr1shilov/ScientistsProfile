@@ -35,17 +35,51 @@ class OEСDApiId:
         oecd_df = pd.read_excel('kody_OECD.xlsx')
         self.oecd_df = oecd_df.applymap(lambda s: s.replace('\n', ' ') if isinstance(s, str) else s)
 
+    def get_author_meta(self, author_id, max_retries=5, wait_seconds=3):
+        url = 'https://api.semanticscholar.org/graph/v1/author/batch'
+        params = {'fields': 'name,hIndex,citationCount,paperCount'}
+        payload = {"ids": [author_id]}
+
+        for attempt in range(1, max_retries + 1):
+            api_logger.info(f"Попытка {attempt} запроса для автора {author_id}...")
+
+            try:
+                response = requests.post(url, params=params, json=payload)
+                if response.status_code != 200:
+                    api_logger.info(f"HTTP {response.status_code}: {response.text}")
+                    time.sleep(wait_seconds)
+                    continue
+
+                data = response.json()
+
+                # Проверка: API вернул список?
+                if isinstance(data, list) and data:
+                    api_logger.info("Успешно получен ответ")
+                    return data[0]
+
+                # Иногда API может вернуть {'error': ...}
+                elif isinstance(data, dict) and "error" in data:
+                    api_logger.info(f"API error: {data['error']}")
+                else:
+                    api_logger.info("⚠️ Ответ API не является списком или пуст")
+
+            except Exception as e:
+                api_logger.info(f"Ошибка запроса: {e}")
+
+            time.sleep(wait_seconds)  # подождать перед новой попыткой
+
+        api_logger.info("⛔ Все попытки исчерпаны. Ответ не получен.")
+        return None
 
     def get_author_papers(self, author_id, top_n_papers=10, limit=100):
         api_logger.info("Начало работы для получения работ автора")
+
         # Получение информации об авторе
-        request = requests.post(
-            'https://api.semanticscholar.org/graph/v1/author/batch',
-            params={'fields': 'name,hIndex,citationCount,paperCount'},
-            json={"ids":[f"{author_id}"]},
-        )
-        author_meta = request.json()[0]
-        matching_author = {'authorId': author_meta['authorId'], 'name': author_meta['name']}
+        author_meta = self.get_author_meta(author_id)
+        if author_meta:
+            matching_author = {'authorId': author_meta['authorId'], 'name': author_meta['name']}
+        else: 
+            api_logger.info('Данные не загрузились')
 
         steps_num = author_meta['paperCount'] // limit + 1
 
@@ -195,7 +229,6 @@ class OEСDApiId:
 
         return df_updated
 
-    
     def dict_to_excel(self, author_id, user_id):
         author_papers, author = self.get_author_papers(author_id)
         total_df = pd.DataFrame()
