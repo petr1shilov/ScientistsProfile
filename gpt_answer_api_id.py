@@ -8,6 +8,7 @@ import time
 import logging
 import requests
 import xlsxwriter
+from tqdm import tqdm
 
 from bot.texts import *
 
@@ -40,20 +41,39 @@ class GPTGenApiId:
             annotation_dict = df.set_index('Название лаборатории / центра')[annotation_columns].apply(lambda row: row.tolist(), axis=1).to_dict()
             return annotation_dict        
         
-    def get_author_papers(self, author_id, top_n_papers=2, n_search_papers=20):
-        author_papers = author_papers = requests.get(f'https://api.semanticscholar.org/graph/v1/author/{author_id}/papers?fields=title,authors,citationCount,abstract&limit={n_search_papers}').json()
-        papers_with_annotations = [paper for paper in author_papers['data'] if paper['abstract']]
-        most_important_papers = sorted(
-            papers_with_annotations,
-            key=lambda d: d['citationCount'], reverse=True)[:top_n_papers]
-        matching_author = next(
-        (author for paper in author_papers['data'] 
-                for author in paper.get('authors', []) 
-                    if author.get('authorId') == str(author_id)), 
-                None
+    def get_author_papers(self, author_id, top_n_papers=10, limit=100):
+        api_logger.info("Начало работы для получения работ автора")
+        # Получение информации об авторе
+        request = requests.post(
+            'https://api.semanticscholar.org/graph/v1/author/batch',
+            params={'fields': 'name,hIndex,citationCount,paperCount'},
+            json={"ids":[f"{author_id}"]},
+        )
+        author_meta = request.json()[0]
+        matching_author = {'authorId': author_meta['authorId'], 'name': author_meta['name']}
+
+        steps_num = author_meta['paperCount'] // limit + 1
+
+        # Сбор всех статей автора
+        all_papers = []
+        for i in tqdm(range(steps_num), desc="Загружаю статьи автора"):
+            offset = limit * i
+            response = requests.get(
+                f'https://api.semanticscholar.org/graph/v1/author/{author_id}/papers',
+                params={
+                    'fields': 'title,citationCount,authors,abstract,paperId',
+                    'limit': limit,
+                    'offset': offset
+                },
             )
+            all_papers += response.json().get('data', [])
+            time.sleep(0.5)
+        filtered_papers = [paper for paper in all_papers if paper.get('abstract') is not None]
+        most_important_papers = sorted(filtered_papers, key=lambda x: x['citationCount'], reverse=True)[:top_n_papers]
+
         list_of_abstracts = [i['abstract'] for i in most_important_papers]
         annotation_dict = {matching_author['name']: list_of_abstracts}
+        print(annotation_dict)
         return annotation_dict
       
 
